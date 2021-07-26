@@ -14,6 +14,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Authors:
 * C implementation: Mengyao Zhao
+* Optimization: Roman Snytsar
 * C++ wrapper: Wan-Ping Lee
 * Python wrapper: Yongan Zhao
 * Java wrapper: Daniel Cameron
@@ -21,6 +22,7 @@ Authors:
 
 Contact:
 * Mengyao Zhao <zhaomengyao@gmail.com>
+* Roman Snytsar <roman.snytsar@microsoft.com>
 * Wan-Ping Lee <wanping.lee@gmail.com>
 * Yongan Zhao <zhaoyanswill@gmail.com>
 * Daniel Cameron <cameron.d@wehi.edu.au>

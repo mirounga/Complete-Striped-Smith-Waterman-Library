@@ -56,14 +56,16 @@
  *
  *  Created by Mengyao Zhao on 6/22/10.
  *  Copyright 2010 Boston College. All rights reserved.
- *	Version 1.2.4
- *	Last revision by Mengyao Zhao on 2019-03-04.
+ *	Version 1.3
+ *	Last revision by Roman Snytsar on 2021-07-26.
  *
  *  The lazy-F loop implementation was derived from SWPS3, which is
  *  MIT licensed under ETH Zürich, Institute of Computational Science.
  *
  *  The core SW loop referenced the swsse2 implementation, which is
- *  BSD licensed under Micharl Farrar.
+ *  BSD licensed under Michael Farrar.
+ * 
+ *  The lazy-F Loop has been optimized by splitting the F scan and H loop
  */
 
 //#include <nmmintrin.h>
@@ -229,12 +231,13 @@ static alignment_end* sw_sse2_byte (const int8_t* ref,
 	__m128i* pvE = (__m128i*) calloc(segLen, sizeof(__m128i));
 	__m128i* pvHmax = (__m128i*) calloc(segLen, sizeof(__m128i));
 
-	int32_t i, j, k;
+	int32_t i, j;
 	/* 16 byte insertion begin vector */
 	__m128i vGapO = _mm_set1_epi8(weight_gapO);
 
 	/* 16 byte insertion extension vector */
 	__m128i vGapE = _mm_set1_epi8(weight_gapE);
+	__m128i vGapExSlen = _mm_set1_epi8(weight_gapE * segLen);
 
 	/* 16 byte bias vector */
 	__m128i vBias = _mm_set1_epi8(bias);
@@ -293,21 +296,65 @@ static alignment_end* sw_sse2_byte (const int8_t* ref,
 			vH = _mm_load_si128(pvHLoad + j);
 		}
 
-/* Lazy_F loop: has been revised to disallow adjecent insertion and then deletion, so don't update E(i, j), learn from SWPS3 */
-		for (k = 0; LIKELY(k < 16); ++k) {
-			vF = _mm_slli_si128 (vF, 1);
+/* Lazy_F loop: has been revised to disallow adjecent insertion and then deletion, so don't update E(i, j), learn from SWPS3.
+   Subsequently, Lazy_f loop has been split into the F scan and the H loop*/
+		{
+			// F Scan
+			__m128i vFScan = vF;
+			{
+				__m128i vGapK = vGapExSlen;
+				vFScan = _mm_max_epu8(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu8(
+							vFScan,
+							vGapK),
+						1));
+
+				vGapK = _mm_adds_epu8(vGapK, vGapK);
+
+				vFScan = _mm_max_epu8(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu8(
+							vFScan,
+							vGapK),
+						2));
+
+				vGapK = _mm_adds_epu8(vGapK, vGapK);
+
+				vFScan = _mm_max_epu8(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu8(
+							vFScan,
+							vGapK),
+						4));
+
+				vGapK = _mm_adds_epu8(vGapK, vGapK);
+
+				vFScan = _mm_max_epu8(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu8(
+							vFScan,
+							vGapK),
+						8));
+
+				// Make it exclusive
+				vFScan = _mm_slli_si128(vFScan, 1);
+			}
+
+			// H Loop
 			for (j = 0; LIKELY(j < segLen); ++j) {
 				vH = _mm_load_si128(pvHStore + j);
-				vH = _mm_max_epu8(vH, vF);
+				vH = _mm_max_epu8(vH, vFScan);
 				vMaxColumn = _mm_max_epu8(vMaxColumn, vH);	// newly added line
 				_mm_store_si128(pvHStore + j, vH);
-				vH = _mm_subs_epu8(vH, vGapO);
-				vF = _mm_subs_epu8(vF, vGapE);
-				if (UNLIKELY(! _mm_movemask_epi8(_mm_cmpgt_epi8(vF, vH)))) goto end;
+
+				vFScan = _mm_subs_epu8(vFScan, vGapE);
 			}
 		}
-
-end:		
 
 		vMaxScore = _mm_max_epu8(vMaxScore, vMaxColumn);
 		vTemp = _mm_cmpeq_epi8(vMaxMark, vMaxScore);
@@ -437,12 +484,13 @@ static alignment_end* sw_sse2_word (const int8_t* ref,
 	__m128i* pvE = (__m128i*) calloc(segLen, sizeof(__m128i));
 	__m128i* pvHmax = (__m128i*) calloc(segLen, sizeof(__m128i));
 
-	int32_t i, j, k;
+	int32_t i, j;
 	/* 16 byte insertion begin vector */
 	__m128i vGapO = _mm_set1_epi16(weight_gapO);
 
 	/* 16 byte insertion extension vector */
 	__m128i vGapE = _mm_set1_epi16(weight_gapE);
+	__m128i vGapExSlen = _mm_set1_epi16(weight_gapE * segLen);
 
 	__m128i vMaxScore = vZero; /* Trace the highest score of the whole SW matrix. */
 	__m128i vMaxMark = vZero; /* Trace the highest score till the previous column. */
@@ -499,21 +547,59 @@ static alignment_end* sw_sse2_word (const int8_t* ref,
 			vH = _mm_load_si128(pvHLoad + j);
 		}
 
-		/* Lazy_F loop: has been revised to disallow adjecent insertion and then deletion, so don't update E(i, j), learn from SWPS3 */
-		for (k = 0; LIKELY(k < 8); ++k) {
-			vF = _mm_slli_si128 (vF, 2);
+		/* Lazy_F loop: has been revised to disallow adjecent insertion and then deletion, so don't update E(i, j), learn from SWPS3.
+		   Subsequently, Lazy_f loop has been split into the F scan and the H loop*/
+		{
+			__m128i vFScan = vF;
+
+			// F Scan
+			{
+				__m128i vGapK = vGapExSlen;
+
+				// First pass
+				vFScan = _mm_max_epi16(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu16(
+							vFScan,
+							vGapK),
+						2));
+
+				vGapK = _mm_adds_epu16(vGapK, vGapK);
+
+				vFScan = _mm_max_epi16(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu16(
+							vFScan,
+							vGapK),
+						4));
+
+				vGapK = _mm_adds_epu16(vGapK, vGapK);
+
+				vFScan = _mm_max_epi16(
+					vFScan,
+					_mm_slli_si128(
+						_mm_subs_epu16(
+							vFScan,
+							vGapK),
+						8));
+
+				// Make it exclusive
+				vFScan = _mm_slli_si128(vFScan, 2);
+			}
+
+			// H Loop
 			for (j = 0; LIKELY(j < segLen); ++j) {
 				vH = _mm_load_si128(pvHStore + j);
-				vH = _mm_max_epi16(vH, vF);
-				vMaxColumn = _mm_max_epi16(vMaxColumn, vH); //newly added line
+				vH = _mm_max_epi16(vH, vFScan);
+				vMaxColumn = _mm_max_epi16(vMaxColumn, vH);	// newly added line
 				_mm_store_si128(pvHStore + j, vH);
-				vH = _mm_subs_epu16(vH, vGapO);
-				vF = _mm_subs_epu16(vF, vGapE);
-				if (UNLIKELY(! _mm_movemask_epi8(_mm_cmpgt_epi16(vF, vH)))) goto end;
+
+				vFScan = _mm_subs_epu16(vFScan, vGapE);
 			}
 		}
 
-end:
 		vMaxScore = _mm_max_epi16(vMaxScore, vMaxColumn);
 		vTemp = _mm_cmpeq_epi16(vMaxMark, vMaxScore);
 		cmp = _mm_movemask_epi8(vTemp);
